@@ -21,14 +21,14 @@ import traceback
 # --- 1. CONFIGURATION & INITIALIZATION ---
 
 # Load environment variables from a .env file for local development.
-# This line should be at the top.
+# This line should be at the top to make variables available.
 load_dotenv()
 
 # Configure the Inference Client to use the fal.ai provider.
 # fal.ai offers a stable and fast serverless GPU environment for running AI models.
 try:
     # For deployment on Streamlit Community Cloud, we use st.secrets.
-    # For local development, we fall back to the .env file.
+    # For local development, it falls back to the .env file.
     api_key = st.secrets.get("FALAI_API_KEY", os.getenv("FALAI_API_KEY"))
     
     if not api_key:
@@ -42,14 +42,14 @@ except (ValueError, AttributeError) as e:
     st.error(f"Configuration Error: {e}")
     st.stop()
 
-# Set the Streamlit page configuration.
+# Set the Streamlit page configuration for a professional look.
 st.set_page_config(
     page_title="AI Head Turner",
     page_icon="🤖",
     layout="centered"
 )
 
-# --- 2. HELPER FUNCTIONS ---
+# --- 2. HELPER & AI FUNCTIONS ---
 
 def create_sphere_visualizer(h_angle: int, v_angle: int) -> plt.Figure:
     """
@@ -111,7 +111,7 @@ def create_sphere_visualizer(h_angle: int, v_angle: int) -> plt.Figure:
 @st.cache_data(ttl=3600) # Cache results for 1 hour to save on API calls
 def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.Image | None:
     """
-    Calls the AI model via the fal.ai provider to generate the new image.
+    Calls the AI model via the fal.ai provider with an engineered prompt.
 
     Args:
         _image (Image.Image): The original PIL Image object.
@@ -121,22 +121,37 @@ def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.
     Returns:
         Image.Image | None: The generated PIL Image, or None if an error occurred.
     """
-    # Construct a clear, instructional prompt for the image editing model.
-    h_direction = ""
-    if h_angle > 5: h_direction = "to the right"
-    elif h_angle < -5: h_direction = "to the left"
+    # --- Prompt Engineering ---
+    # 1. Define the persona for the AI.
+    persona = "You are an expert digital artist specializing in photorealistic edits."
 
-    v_direction = ""
-    if v_angle > 5: v_direction = "and look up"
-    elif v_angle < -5: v_direction = "and look down"
+    # 2. Create descriptive, clear instructions based on the slider values.
+    # We use a "dead zone" to avoid tiny, noisy changes.
+    h_direction = "forward"
+    if h_angle > 5: h_direction = f"approximately {abs(h_angle)} degrees to the right"
+    elif h_angle < -5: h_direction = f"approximately {abs(h_angle)} degrees to the left"
 
-    if not h_direction and not v_direction:
-        prompt = "make the person look directly at the camera"
-    else:
-        prompt = f"make the person turn their head {h_direction} {v_direction}"
+    v_direction = "level"
+    if v_angle > 5: v_direction = f"tilted approximately {abs(v_angle)} degrees upward"
+    elif v_angle < -5: v_direction = f"tilted approximately {abs(v_angle)} degrees downward"
+
+    # 3. Define strict negative constraints (what the AI should NOT do).
+    negative_constraints = (
+        "Do not change the person's identity, facial features, hair, or expression. "
+        "Do not alter the background, lighting, or clothing. "
+        "Preserve the original photo's style and quality."
+    )
+
+    # 4. Combine everything into a final, structured prompt.
+    prompt = (
+        f"{persona} "
+        f"Regenerate this image. Your only task is to change the head pose of the person. "
+        f"Make them look {h_direction} and {v_direction}. "
+        f"{negative_constraints}"
+    )
 
     try:
-        # Call the API using the InferenceClient.
+        # Call the API with the engineered prompt.
         # The model 'meituan-longcat/LongCat-Image-Edit' is specifically
         # designed for instruction-based image editing.
         generated_image = client.image_to_image(
@@ -149,6 +164,7 @@ def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.
     except Exception as e:
         # Provide user-friendly error messages and log the full traceback for debugging.
         st.error("An error occurred while communicating with the AI model.")
+        # Print to console for developer debugging
         print(f"Error Details: {str(e)}")
         print(traceback.format_exc())
         return None
@@ -182,8 +198,8 @@ if uploaded_file:
         st.subheader("2. Adjust Pose")
         
         # Component 2 & 3: Sliders and Interactive Visualizer
-        h_angle = st.slider("Yaw (Horizontal)", -45, 45, 0)
-        v_angle = st.slider("Pitch (Vertical)", -30, 30, 0)
+        h_angle = st.slider("Yaw (Horizontal)", -45, 45, 0, help="Controls left/right turning of the head.")
+        v_angle = st.slider("Pitch (Vertical)", -30, 30, 0, help="Controls up/down tilt of the head.")
         
         st.write("Direction Preview:")
         direction_fig = create_sphere_visualizer(h_angle, v_angle)
@@ -199,7 +215,7 @@ if uploaded_file:
             st.success("Generation Complete!")
             st.image(generated_image, caption="Here is your new image!", use_column_width=True)
         else:
-            # Error message is handled inside the generate_new_pose function
+            # Error messages are handled inside the generate_new_pose function
             pass
 else:
     st.info("Please upload an image to get started.")
