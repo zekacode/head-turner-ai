@@ -122,27 +122,18 @@ def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.
         Image.Image | None: The generated PIL Image, or None if an error occurred.
     """
     # --- Prompt Engineering ---
-    # 1. Define the persona for the AI.
     persona = "You are an expert digital artist specializing in photorealistic edits."
-
-    # 2. Create descriptive, clear instructions based on the slider values.
-    # We use a "dead zone" to avoid tiny, noisy changes.
     h_direction = "forward"
     if h_angle > 5: h_direction = f"approximately {abs(h_angle)} degrees to the right"
     elif h_angle < -5: h_direction = f"approximately {abs(h_angle)} degrees to the left"
-
     v_direction = "level"
     if v_angle > 5: v_direction = f"tilted approximately {abs(v_angle)} degrees upward"
     elif v_angle < -5: v_direction = f"tilted approximately {abs(v_angle)} degrees downward"
-
-    # 3. Define strict negative constraints (what the AI should NOT do).
     negative_constraints = (
         "Do not change the person's identity, facial features, hair, or expression. "
         "Do not alter the background, lighting, or clothing. "
         "Preserve the original photo's style and quality."
     )
-
-    # 4. Combine everything into a final, structured prompt.
     prompt = (
         f"{persona} "
         f"Regenerate this image. Your only task is to change the head pose of the person. "
@@ -152,8 +143,6 @@ def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.
 
     try:
         # Call the API with the engineered prompt.
-        # The model 'meituan-longcat/LongCat-Image-Edit' is specifically
-        # designed for instruction-based image editing.
         generated_image = client.image_to_image(
             image=_image,
             prompt=prompt,
@@ -162,11 +151,11 @@ def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.
         return generated_image
 
     except Exception as e:
-        # Provide user-friendly error messages and log the full traceback for debugging.
-        st.error("An error occurred while communicating with the AI model.")
-        # Print to console for developer debugging
-        print(f"Error Details: {str(e)}")
-        print(traceback.format_exc())
+        # --- IMPROVED ERROR LOGGING FOR DEPLOYMENT ---
+        # st.exception() displays the full error traceback in the Streamlit UI,
+        # which is essential for debugging issues on the live server.
+        st.error("An error occurred while communicating with the AI model. See details below.")
+        st.exception(e)
         return None
 
 # --- 3. MAIN APPLICATION UI ---
@@ -192,7 +181,9 @@ if uploaded_file:
     
     with col1:
         st.subheader("Original Image")
-        st.image(original_image, use_column_width=True)
+        # --- FIX: DEPRECATION WARNING ---
+        # Replaced use_column_width=True with use_column_width='always'
+        st.image(original_image, use_column_width='always')
         
     with col2:
         st.subheader("2. Adjust Pose")
@@ -213,9 +204,10 @@ if uploaded_file:
         
         if generated_image:
             st.success("Generation Complete!")
-            st.image(generated_image, caption="Here is your new image!", use_column_width=True)
+            # --- FIX: DEPRECATION WARNING ---
+            st.image(generated_image, caption="Here is your new image!", use_column_width='always')
         else:
-            # Error messages are handled inside the generate_new_pose function
+            # Error messages are now handled inside the generate_new_pose function
             pass
 else:
     st.info("Please upload an image to get started.")
