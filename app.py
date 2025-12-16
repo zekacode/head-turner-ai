@@ -27,12 +27,14 @@ load_dotenv()
 # Configure the Inference Client to use the fal.ai provider.
 # fal.ai offers a stable and fast serverless GPU environment for running AI models.
 try:
-    # For deployment on Streamlit Community Cloud, we use st.secrets.
-    # For local development, it falls back to the .env file.
-    api_key = st.secrets.get("FALAI_API_KEY", os.getenv("FALAI_API_KEY"))
+    # --- THIS IS THE FIX ---
+    # For local development, we directly get the key from the .env file.
+    # The st.secrets method is only used when deploying to the cloud and
+    # will cause an error if a .streamlit/secrets.toml file is not found.
+    api_key = os.getenv("FALAI_API_KEY")
     
     if not api_key:
-        raise ValueError("FALAI_API_KEY not found. Please set it in your .env file or Streamlit secrets.")
+        raise ValueError("FALAI_API_KEY not found. Please ensure your .env file is correct and in the same folder as app.py.")
     
     # Initialize the client with the fal.ai provider and the API key.
     # The library uses 'token' as the parameter name for the key.
