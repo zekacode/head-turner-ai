@@ -1,4 +1,10 @@
 # app.py
+#
+# An AI-powered web application that allows users to change the head pose
+# in a photograph using an interactive UI and a generative AI model.
+#
+# Author: Putrawin Adha Muzakki
+# Tech Stack: Python, Streamlit, Hugging Face, fal.ai
 
 import streamlit as st
 import os
@@ -9,134 +15,163 @@ from matplotlib.path import Path
 from matplotlib.patches import PathPatch
 from PIL import Image
 from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
+import traceback
 
-# --- PERBAIKAN PENTING DI SINI ---
-# Kita gunakan library standard yang stabil agar 'configure' berfungsi
-import google.generativeai as genai
+# --- 1. CONFIGURATION & INITIALIZATION ---
 
-# --- Configuration ---
-# Load environment variables from .env file
+# Load environment variables from a .env file for local development.
+# This line should be at the top.
 load_dotenv()
 
-# Configure the Google Generative AI client
+# Configure the Inference Client to use the fal.ai provider.
+# fal.ai offers a stable and fast serverless GPU environment for running AI models.
 try:
-    # Ambil API Key dari .env
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("Google API Key not found in .env file.")
+    # For deployment on Streamlit Community Cloud, we use st.secrets.
+    # For local development, we fall back to the .env file.
+    api_key = st.secrets.get("FALAI_API_KEY", os.getenv("FALAI_API_KEY"))
     
-    # Konfigurasi client (ini hanya jalan jika import google.generativeai as genai)
-    genai.configure(api_key=api_key)
+    if not api_key:
+        raise ValueError("FALAI_API_KEY not found. Please set it in your .env file or Streamlit secrets.")
+    
+    # Initialize the client with the fal.ai provider and the API key.
+    # The library uses 'token' as the parameter name for the key.
+    client = InferenceClient(provider="fal-ai", token=api_key)
     
 except (ValueError, AttributeError) as e:
-    st.error(f"Error configuring the Google API Key: {e}. Please ensure your .env file is correct.")
+    st.error(f"Configuration Error: {e}")
     st.stop()
 
-# Set page configuration for Streamlit
+# Set the Streamlit page configuration.
 st.set_page_config(
     page_title="AI Head Turner",
     page_icon="🤖",
     layout="centered"
 )
 
-# --- Helper Functions ---
+# --- 2. HELPER FUNCTIONS ---
 
-def create_sphere_visualizer(h_angle, v_angle):
+def create_sphere_visualizer(h_angle: int, v_angle: int) -> plt.Figure:
     """
-    Creates a dynamic, 3D-like globe with curved lines of longitude/latitude
-    that are anchored to the edges and intersect at the handle.
+    Generates a dynamic, 3D-like sphere visualizer using Matplotlib.
+
+    The visualizer shows a sphere with curved grid lines that are "pulled"
+    by a handle, representing the selected horizontal and vertical angles.
+
+    Args:
+        h_angle (int): The horizontal angle (yaw) in degrees.
+        v_angle (int): The vertical angle (pitch) in degrees.
+
+    Returns:
+        plt.Figure: A Matplotlib figure object containing the visualizer plot.
     """
     fig, ax = plt.subplots(figsize=(4, 4))
     fig.patch.set_facecolor('#0E1117')
     ax.set_facecolor('#0E1117')
+
+    # Main sphere outline
     sphere_outline = plt.Circle((0, 0), 1, color='#3B82F6', fill=False, linewidth=2, zorder=10)
     ax.add_artist(sphere_outline)
+
+    # Calculate handle position based on angles
     h_rad, v_rad = np.deg2rad(h_angle), np.deg2rad(v_angle)
     px, py = 0.85 * np.sin(h_rad), 0.85 * np.sin(v_rad)
+    
+    # Define anchor points and the handle's start point
     top, bottom, left, right = (0, 1), (0, -1), (-1, 0), (1, 0)
     start_point = (px, py)
+
+    # Create four Bezier curve paths from the handle to the sphere's edges
     path_data = [
         (Path.MOVETO, start_point), (Path.CURVE3, (px, 1)), (Path.CURVE3, top),
         (Path.MOVETO, start_point), (Path.CURVE3, (px, -1)), (Path.CURVE3, bottom),
         (Path.MOVETO, start_point), (Path.CURVE3, (-1, py)), (Path.CURVE3, left),
         (Path.MOVETO, start_point), (Path.CURVE3, (1, py)), (Path.CURVE3, right),
     ]
+    
     codes, verts = zip(*path_data)
     path = Path(verts, codes)
     patch = PathPatch(path, facecolor='none', edgecolor='#3B82F6', linestyle='--', alpha=0.8, zorder=1)
     ax.add_patch(patch)
+
+    # Draw the handle and central dot
     handle = plt.Circle((px, py), 0.05, color='white', zorder=6)
     ax.add_artist(handle)
     center_dot = plt.Circle((0, 0), 0.03, color='white', zorder=7)
     ax.add_artist(center_dot)
+
+    # Style the plot
     ax.set_xlim(-1.2, 1.2)
     ax.set_ylim(-1.2, 1.2)
     ax.set_aspect('equal', adjustable='box')
     ax.axis('off')
+    
     return fig
 
-# --- AI Generation Function (with Caching) ---
-@st.cache_data(ttl=3600) 
-def generate_new_pose(_image_bytes, h_angle, v_angle):
+@st.cache_data(ttl=3600) # Cache results for 1 hour to save on API calls
+def generate_new_pose(_image: Image.Image, h_angle: int, v_angle: int) -> Image.Image | None:
     """
-    Calls the Gemini AI model to regenerate the image with a new head pose.
+    Calls the AI model via the fal.ai provider to generate the new image.
+
+    Args:
+        _image (Image.Image): The original PIL Image object.
+        h_angle (int): The target horizontal angle.
+        v_angle (int): The target vertical angle.
+
+    Returns:
+        Image.Image | None: The generated PIL Image, or None if an error occurred.
     """
-    # USE THIS MODEL NAME. It is stable and has the highest free quota.
-    # 'gemini-2.5' does not exist in the public API yet. 
-    # 'gemini-2.0-flash-exp' is the latest experimental version.
-    model_name = 'gemini-1.5-flash' 
-    
+    # Construct a clear, instructional prompt for the image editing model.
+    h_direction = ""
+    if h_angle > 5: h_direction = "to the right"
+    elif h_angle < -5: h_direction = "to the left"
+
+    v_direction = ""
+    if v_angle > 5: v_direction = "and look up"
+    elif v_angle < -5: v_direction = "and look down"
+
+    if not h_direction and not v_direction:
+        prompt = "make the person look directly at the camera"
+    else:
+        prompt = f"make the person turn their head {h_direction} {v_direction}"
+
     try:
-        model = genai.GenerativeModel(model_name)
-        input_image = Image.open(io.BytesIO(_image_bytes))
-
-        h_direction = "forward"
-        if h_angle > 5: h_direction = f"{abs(h_angle)} degrees to the subject's right"
-        elif h_angle < -5: h_direction = f"{abs(h_angle)} degrees to the subject's left"
-
-        v_direction = "level"
-        if v_angle > 5: v_direction = f"{abs(v_angle)} degrees upward"
-        elif v_angle < -5: v_direction = f"{abs(v_angle)} degrees downward"
-
-        prompt = f"""
-        You are an expert AI photo editor. Your task is to regenerate the provided image, changing only the head pose of the main subject.
-
-        **Instructions:**
-        1.  Analyze the original image to understand the subject's face, features, lighting, and background.
-        2.  Regenerate the image, adjusting the subject's head to be turned {h_direction} and tilted {v_direction}.
-        
-        **Strict Rules:**
-        -   **Preserve Identity:** The subject's facial identity, features, hair, and expression must be perfectly preserved.
-        -   **Maintain Consistency:** The background, clothing, lighting, shadows, and overall image style must remain identical.
-        -   **Single Change Only:** Do not add, remove, or alter any other elements. Only the head pose should change.
-        -   **Output:** The output must be only the final image file. Do not output any text or markdown.
-        """
-        
-        response = model.generate_content([prompt, input_image], stream=False)
-        
-        if response.parts:
-            image_data = response.parts[0].data
-            return Image.open(io.BytesIO(image_data))
-        else:
-            st.error("AI refused to generate. Try a different pose.")
-            return None
+        # Call the API using the InferenceClient.
+        # The model 'meituan-longcat/LongCat-Image-Edit' is specifically
+        # designed for instruction-based image editing.
+        generated_image = client.image_to_image(
+            image=_image,
+            prompt=prompt,
+            model="meituan-longcat/LongCat-Image-Edit",
+        )
+        return generated_image
 
     except Exception as e:
-        # If you get a 429 error here, it means you must wait 60 seconds 
-        # because the Free Tier limit was reached.
-        st.error(f"AI Error: {e}")
+        # Provide user-friendly error messages and log the full traceback for debugging.
+        st.error("An error occurred while communicating with the AI model.")
+        print(f"Error Details: {str(e)}")
+        print(traceback.format_exc())
         return None
-    
-# --- Main Application UI ---
-st.title("🤖 AI Head Turner Tool")
-st.write("Upload a photo and use the sliders to change the subject's head direction.")
 
+# --- 3. MAIN APPLICATION UI ---
+
+st.title("🤖 AI Head Turner")
+st.write(
+    "An interactive tool to change the head direction in a photo. "
+    "Powered by generative AI hosted on `fal.ai`."
+)
+
+# Component 1: File Uploader
 st.header("1. Upload Your Photo")
-uploaded_file = st.file_uploader("Choose a clear, front-facing portrait...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader(
+    "Choose a clear, front-facing portrait for the best results.",
+    type=["jpg", "jpeg", "png"]
+)
 
 if uploaded_file:
     original_image = Image.open(uploaded_file)
 
+    # Use columns for a clean side-by-side layout
     col1, col2 = st.columns(2)
     
     with col1:
@@ -144,26 +179,27 @@ if uploaded_file:
         st.image(original_image, use_column_width=True)
         
     with col2:
-        st.subheader("2. & 3. Adjust Pose")
+        st.subheader("2. Adjust Pose")
+        
+        # Component 2 & 3: Sliders and Interactive Visualizer
         h_angle = st.slider("Yaw (Horizontal)", -45, 45, 0)
         v_angle = st.slider("Pitch (Vertical)", -30, 30, 0)
+        
         st.write("Direction Preview:")
         direction_fig = create_sphere_visualizer(h_angle, v_angle)
         st.pyplot(direction_fig)
 
-    st.header("4. Generate Your Image")
+    # Component 4: Generate Button and Output Area
+    st.header("3. Generate Your Image")
     if st.button("Apply New Pose", type="primary"):
-        with st.spinner('The AI is working its magic... Please wait.'):
-            img_byte_arr = io.BytesIO()
-            image_format = original_image.format or 'PNG'
-            original_image.save(img_byte_arr, format=image_format)
-            image_bytes = img_byte_arr.getvalue()
-            
-            generated_image = generate_new_pose(image_bytes, h_angle, v_angle)
+        with st.spinner('Connecting to the AI... This may take a moment.'):
+            generated_image = generate_new_pose(original_image, h_angle, v_angle)
         
         if generated_image:
             st.success("Generation Complete!")
             st.image(generated_image, caption="Here is your new image!", use_column_width=True)
-
+        else:
+            # Error message is handled inside the generate_new_pose function
+            pass
 else:
     st.info("Please upload an image to get started.")
